@@ -1,96 +1,91 @@
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 
-class Main {
-    suspend fun fetchData(id: Int): String {
-        println("[$id] 시작: ${Thread.currentThread().name}")
-        delay(1000)
-        println("[$id] 완료: ${Thread.currentThread().name}")
-        return "Data-$id"
-    }
-}
-
 /**
- * launch - 결과 없는 병렬 실행
- * 
- * 핵심 내용:
- * 1. launch는 Job을 반환 (코루틴의 생명주기 관리 객체)
- * 2. join() 없이는 메인이 먼저 종료될 수 있음
- * 3. 병렬 실행으로 2초 → 1초로 단축
- * 
- * Job 주요 기능:
- * - job.join()   : 완료될 때까지 대기 (suspend)
- * - job.cancel() : 즉시 취소
- * - job.isActive / isCompleted / isCancelled : 상태 확인
+ *  async/await
+ *  결과를 반환하는 비동기 작업
+ * - 반환값 : Deferred(await() 가능)
+ * - 여러 비동기 작업을 병렬로 실행할 때
+ * - DB + 외부 API + 파일 읽기 등 병렬 처리할 때
+ *
+ *  Deferred
+ *  나중에 결과가 도착할 비동기 작업을 표현한 객체
+ * - async를 쓰면 항상 이것이 반환
+ * - await()를 호출해 결과를 꺼낼수있다.
  */
 
 fun main() = runBlocking {
-     experiment1()
-//     experiment2()
+
+    experimentSequential()   // 잘못된 사용: await를 바로 호출 → 직렬
+    println()
+    experimentParallel()     // 올바른 사용: async 먼저 실행 → await로 결과만 모음
+    println()
 }
 
 /**
- * 실험 1: join() 없이 launch만 사용
- * 
- * 결과:
- * 메인 시작
- * 메인 종료: 1 ms        ← 메인이 먼저 끝남
- * [1] 시작: main
- * [2] 시작: main
- * [1] 완료: main
- * [2] 완료: main
- * 
- * 관찰: 
- * - launch는 즉시 반환
- * - 코루틴은 백그라운드에서 실행
- * - runBlocking이 자식 코루틴을 자동으로 기다려줌
+ * 직렬 (잘못된 사용)
+ * async 호출 직후 await를 붙이면 각 작업이 끝날 때까지 순차적으로 대기한다.
  */
-suspend fun CoroutineScope.experiment1() {
+private suspend fun CoroutineScope.experimentSequential() {
+    val userService = MockUserService()
+    val apiService = MockApiService()
 
-        println("\n=== 실험 1: launch without join ===")
-        println("메인 시작")
-        val main = Main()
-        val startTime = System.currentTimeMillis()
+    val start = System.currentTimeMillis()
+    println("Sequential (잘못된 사용)")
 
+    // async 바로 뒤에 await() -> 사실상 순차 호출
+    async { userService.getUserFromDb(1) }.await()
+    async { apiService.fetchUserPosts(1) }.await()
+    async { apiService.fetchUserLikes(1) }.await()
 
-        launch { main.fetchData(1) }
-        launch { main.fetchData(2) }
-
-        val elapsed = System.currentTimeMillis() - startTime
-        println("메인 종료: $elapsed ms")
+    val end = System.currentTimeMillis()
+    println("Duration: ${end - start} ms")
+    /**
+     * 결과
+     * DB에서 사용자 정보 조회중...
+     * 사용자 정보 조회 완료!
+     * 외부 API로 사용자 POST 불러오는중...
+     * 사용자 POST 불러오기 완료!
+     * 외부 API로 사용자 LIKES 불러오는중...
+     * 사용자 LIKES 불러오기 완료!
+     * Duration: 3025 ms
+     */
 }
 
+
 /**
- * 실험 2: join()으로 명시적 대기
- * 
- * 결과:
- * 메인 시작
- * [1] 시작: main
- * [2] 시작: main
- * [1] 완료: main
- * [2] 완료: main
- * 메인 종료: 1016 ms     ← 1초 후에 종료!
- * 
- * 관찰:
- * - join()은 해당 Job이 완료될 때까지 대기 (suspend)
- * - 두 작업이 동시 실행되어 총 1초만 소요
- * - join() 순서는 상관없음 (이미 시작된 상태)
+ * 병렬
+ * async를 먼저 모두 실행해두고, 나중에 await로 결과만 모으면 병렬로 동작한다.
  */
-suspend fun CoroutineScope.experiment2() {
-    println("\n=== 실험 2: launch with join ===")
-    println("메인 시작")
-    val main = Main()
-    val startTime = System.currentTimeMillis()
+private suspend fun CoroutineScope.experimentParallel() {
+    val userService = MockUserService()
+    val apiService = MockApiService()
 
+    val start = System.currentTimeMillis()
+    println("Parallel (권장)")
 
-    val job1 = launch { main.fetchData(1) }
-    val job2 = launch { main.fetchData(2) }
+    // async로 작업을 동시에 시작
+    val userDeferred = async { userService.getUserFromDb(1) }
+    val postsDeferred = async { apiService.fetchUserPosts(1) }
+    val likesDeferred = async { apiService.fetchUserLikes(1) }
 
-    job2.join()  // job2 완료 대기
-    job1.join()  // job1 완료 대기
+    // 결과는 나중에 모아서 받기(이미 작업은 병렬로 진행 중)
+    userDeferred.await()
+    postsDeferred.await()
+    likesDeferred.await()
 
-    val elapsed = System.currentTimeMillis() - startTime
-    println("메인 종료: $elapsed ms")
+    val end = System.currentTimeMillis()
+    println("Duration: ${end - start} ms")
+    /**
+     * 결과
+     * Parallel (권장)
+     * DB에서 사용자 정보 조회중...
+     * 외부 API로 사용자 POST 불러오는중...
+     * 외부 API로 사용자 LIKES 불러오는중...
+     * 사용자 정보 조회 완료!
+     * 사용자 POST 불러오기 완료!
+     * 사용자 LIKES 불러오기 완료!
+     * Duration: 1006 ms
+     */
 }
